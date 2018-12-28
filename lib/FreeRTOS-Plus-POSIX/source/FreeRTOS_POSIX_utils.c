@@ -58,34 +58,32 @@ size_t UTILS_strnlen( const char * const pcString,
 
 /*-----------------------------------------------------------*/
 
-int UTILS_AbsoluteTimespecToTicks( const struct timespec * const pxAbsoluteTime,
+int UTILS_AbsoluteTimespecToDeltaTicks( const struct timespec * const pxAbsoluteTime,
+                                   const struct timespec * const pxCurrentTime,
                                    TickType_t * const pxResult )
 {
     int iStatus = 0;
-    struct timespec xCurrentTime = { 0 }, xDifference = { 0 };
+    struct timespec xDifference = { 0 };
 
     /* Check parameters. */
-    if( ( pxAbsoluteTime == NULL ) || ( pxResult == NULL ) )
+    if( ( pxAbsoluteTime == NULL ) || ( pxCurrentTime == NULL ) || ( pxResult == NULL ) )
     {
         iStatus = EINVAL;
     }
 
-    /* Get the current time. */
+    /* Calculate the difference between the current time and absolute time. */
     if( iStatus == 0 )
     {
-        if( clock_gettime( CLOCK_REALTIME, &xCurrentTime ) != 0 )
-        {
-            iStatus = errno;
-        }
-    }
-
-    /* Calculate the difference between the current time and pxAbsoluteTime. */
-    if( iStatus == 0 )
-    {
-        if( UTILS_TimespecSubtract( &xDifference, pxAbsoluteTime, &xCurrentTime ) != 0 )
+        iStatus = UTILS_TimespecSubtract( pxAbsoluteTime, pxCurrentTime, &xDifference );
+        if( iStatus == 1 )
         {
             /* pxAbsoluteTime was in the past. */
             iStatus = ETIMEDOUT;
+        }
+        else if( iStatus == -1 )
+        {
+            /* error */
+            iStatus = EINVAL;
         }
     }
 
@@ -162,9 +160,9 @@ void UTILS_NanosecondsToTimespec( int64_t llSource,
 
 /*-----------------------------------------------------------*/
 
-int UTILS_TimespecAdd( struct timespec * const pxResult,
-                       const struct timespec * const x,
-                       const struct timespec * const y )
+int UTILS_TimespecAdd( const struct timespec * const x,
+                       const struct timespec * const y,
+                       struct timespec * const pxResult )
 {
     int64_t llResult64 = 0;
 
@@ -186,9 +184,9 @@ int UTILS_TimespecAdd( struct timespec * const pxResult,
 
 /*-----------------------------------------------------------*/
 
-int UTILS_TimespecAddNanoseconds( struct timespec * const pxResult,
-                                  const struct timespec * const x,
-                                  int64_t llNanoseconds )
+int UTILS_TimespecAddNanoseconds( const struct timespec * const x,
+                                  int64_t llNanoseconds,
+                                  struct timespec * const pxResult )
 {
     struct timespec y = { .tv_sec = ( time_t ) 0, .tv_nsec = 0L };
 
@@ -202,16 +200,17 @@ int UTILS_TimespecAddNanoseconds( struct timespec * const pxResult,
     UTILS_NanosecondsToTimespec( llNanoseconds, &y );
 
     /* Perform addition. */
-    return UTILS_TimespecAdd( pxResult, x, &y );
+    return UTILS_TimespecAdd( x, &y, pxResult );
 }
 
 /*-----------------------------------------------------------*/
 
-int UTILS_TimespecSubtract( struct timespec * const pxResult,
-                            const struct timespec * const x,
-                            const struct timespec * const y )
+int UTILS_TimespecSubtract( const struct timespec * const x,
+                            const struct timespec * const y,
+                            struct timespec * const pxResult )
 {
-    int64_t llResult64 = 0;
+
+    int iCompareResult = 0;
 
     /* Check parameters. */
     if( ( pxResult == NULL ) || ( x == NULL ) || ( y == NULL ) )
@@ -219,14 +218,85 @@ int UTILS_TimespecSubtract( struct timespec * const pxResult,
         return -1;
     }
 
-    /* Perform addition. */
-    llResult64 = ( ( ( int64_t ) ( x->tv_sec ) * NANOSECONDS_PER_SECOND ) + ( int64_t ) ( x->tv_nsec ) )
-                 - ( ( ( int64_t ) ( y->tv_sec ) * NANOSECONDS_PER_SECOND ) + ( int64_t ) ( y->tv_nsec ) );
+    iCompareResult = UTILS_TimespecCompare( x, y );
 
-    /* Convert result to timespec. */
-    UTILS_NanosecondsToTimespec( llResult64, pxResult );
+    /* if x < y then result would be negative, return 1 */
+    if( iCompareResult == -1 )
+    {
+        return 1;
+    }
 
-    return ( int ) ( llResult64 < 0LL );
+    /* if times are the same return zero */
+    if( iCompareResult == 0 )
+    {
+        pxResult->tv_sec = 0;
+        pxResult->tv_nsec = 0;
+        return 0;
+    }
+
+    /* If x > y Perform subtraction. */
+    pxResult->tv_sec = x->tv_sec - y->tv_sec;
+    pxResult->tv_nsec = x->tv_nsec - y->tv_nsec;
+
+    /* check if nano seconds value needs to borrow */
+    if( pxResult->tv_nsec < 0 )
+    {
+        /* Based on comparison, tv_sec > 0 */
+        pxResult->tv_sec--;
+        pxResult->tv_nsec += (long) NANOSECONDS_PER_SECOND;
+    }
+
+    /* if nano second is negative after borrow, it is an overflow error */
+    if( pxResult->tv_nsec < 0 )
+    {
+        return -1;
+    }
+    return 0;
+}
+
+/*-----------------------------------------------------------*/
+
+int UTILS_TimespecCompare( const struct timespec * const x,
+                               const struct timespec * const y)
+{
+    /* Check parameters */
+    if( ( x == NULL ) && ( y == NULL ) )
+    {
+        return 0;
+    }
+    else if( y == NULL )
+    {
+        return 1;
+    }
+    else if( x == NULL )
+    {
+        return -1;
+    }
+
+    /* Compare seconds and then nano seconds */
+    if( x->tv_sec > y->tv_sec )
+    {
+        return 1;
+    }
+    else if( x->tv_sec < y->tv_sec )
+    {
+        return -1;
+    }
+    else
+    {
+        if( x->tv_nsec > y->tv_nsec )
+        {
+            return 1;
+        }
+        else if(x->tv_nsec < y->tv_nsec)
+        {
+            return -1;
+        }
+        else
+        {
+            return 0;
+        }
+    }
 }
 
 /*-----------------------------------------------------------*/
